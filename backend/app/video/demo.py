@@ -1,3 +1,12 @@
+"""Live AegisVision demo.
+
+Pipeline per frame:
+    VideoSource -> resize -> FrameProcessor -> YOLODetector -> draw boxes
+    -> FPS/detection overlay -> cv2.imshow
+
+Run from backend/:  python -m app.video.demo [--webcam | --rtsp URL | --path FILE]
+Keys: Space = pause/resume, q = quit.
+"""
 import argparse
 import time
 
@@ -9,21 +18,28 @@ from .frame_processor import FrameProcessor
 from ..detection.yolo_detector import YOLODetector
 from ..detection.visualizer import draw_detections
 
+# Frames wider than this (pixels) are downscaled before processing.
 MAX_WIDTH = 960
 
 
 def resize_frame(frame, max_width=MAX_WIDTH):
+    """Downscale `frame` to at most `max_width` pixels wide, keeping aspect ratio.
+
+    Frames that are already small enough are returned untouched (never upscaled).
+    """
     h, w = frame.shape[:2]
 
     if w <= max_width:
         return frame
 
     scale = max_width / w
+    # INTER_AREA gives the best quality when shrinking images.
     return cv2.resize(frame, (max_width, int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
 def build_source(args):
     """The rest of the pipeline only sees a VideoSource, never the origin of the frames."""
+    # Priority: RTSP stream > webcam > MP4 file.
     if args.rtsp:
         return RTSPSource(args.rtsp)
     if args.webcam:
@@ -39,6 +55,7 @@ def parse_classes(value):
 
 
 def add_common_args(parser):
+    """Register the CLI options shared by the demo and the benchmark."""
     parser.add_argument("--webcam", action="store_true", help="Use webcam instead of MP4")
     parser.add_argument("--rtsp", default=None, help="RTSP/HTTP stream URL")
     parser.add_argument("--path", default="assets/videos/surveillance_clip.mp4")
@@ -53,6 +70,7 @@ def add_common_args(parser):
 
 
 def main():
+    """Parse arguments, set up source + detector, and run the display loop."""
 
     parser = argparse.ArgumentParser()
     add_common_args(parser)
@@ -61,6 +79,7 @@ def main():
 
     source = build_source(args)
     processor = FrameProcessor()
+    # detector stays None when --no-detect is given, turning the demo into a plain player.
     detector = None if args.no_detect else YOLODetector(
         args.model,
         confidence=args.confidence,
@@ -70,21 +89,25 @@ def main():
 
     fps = source.fps
 
+    # Some sources (webcams, streams) report 0 FPS; fall back to a sane default.
     if fps <= 0:
         fps = 30
 
+    # Milliseconds to wait between frames so playback matches the video's speed.
     delay = int(1000 / fps)
 
     paused = False
-    frame = None
+    frame = None  # last processed frame, re-shown while paused
     num_detections = 0
-    processing_fps = 0.0
+    processing_fps = 0.0  # smoothed measured throughput
 
     while True:
 
+        # While paused we skip reading/processing and just redraw the last frame.
         if not paused or frame is None:
             success, frame = source.read()
 
+            # End of file or lost stream.
             if not success:
                 break
 
@@ -96,14 +119,17 @@ def main():
             num_detections = 0
             if detector is not None:
                 result = detector.detect(frame)
+                # Boxes are drawn onto `frame` in place; returns how many were drawn.
                 num_detections = draw_detections(frame, result)
 
             # Actual processing FPS (smoothed), excludes display/wait time
             dt = time.perf_counter() - t0
             if dt > 0:
                 current = 1 / dt
+                # Exponential moving average so the number doesn't flicker.
                 processing_fps = current if processing_fps == 0 else 0.9 * processing_fps + 0.1 * current
 
+        # Draw the overlay on a copy so the stored frame stays clean (no stacking text while paused).
         display = frame.copy()
 
         # Display video's FPS
@@ -152,6 +178,7 @@ def main():
 
         cv2.imshow("AegisVision", display)
 
+        # waitKey doubles as the frame-rate limiter and the keyboard handler.
         key = cv2.waitKey(delay) & 0xFF
 
         if key == ord("q"):

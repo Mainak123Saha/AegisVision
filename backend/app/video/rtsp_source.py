@@ -12,9 +12,11 @@ class RTSPSource(VideoSource):
         if not self.video.isOpened():
             raise ValueError(f"Could not open stream: {url}")
 
+        # Streams often report 0 FPS; the demo falls back to 30 FPS in that case.
         self.fps = self.video.get(cv2.CAP_PROP_FPS)
 
     def read(self):
+        """Return `(success, frame)`; success is False if the stream drops."""
         return self.video.read()
 
     def release(self):

@@ -6,4 +6,9 @@ class Detector(ABC):
 
     @abstractmethod
     def detect(self, frame):
+        """Run detection on one BGR frame and return the model's result object.
+
+        Currently the result is an Ultralytics `Results` (with `.boxes` and
+        `.names`), which `visualizer.draw_detections` knows how to draw.
+        """
         pass

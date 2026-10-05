@@ -11,9 +11,10 @@ from .demo import add_common_args, build_source, parse_classes, resize_frame
 from ..detection.yolo_detector import YOLODetector
 from ..detection.visualizer import draw_detections
 
+# Initial frames excluded from timing (model load / first-inference overhead).
 WARMUP = 5
 
-# (label, classes, imgsz)
+# (label, classes, imgsz) – each row of the results table.
 CONFIGS = [
     ("All classes, imgsz 640 (baseline)", None, 640),
     ("Person-only, imgsz 640", ["person"], 640),
@@ -24,6 +25,7 @@ CONFIGS = [
 
 
 def load_frames(args, count):
+    """Read `count` (+ warmup) frames once so every config sees identical input."""
     source = build_source(args)
     frames = []
     while len(frames) < count + WARMUP:
@@ -36,12 +38,13 @@ def load_frames(args, count):
 
 
 def run(args, frames, classes, imgsz):
+    """Time detection + drawing over `frames`; return (mean FPS, mean detections)."""
     detector = YOLODetector(
         args.model, confidence=args.confidence, classes=classes, imgsz=imgsz
     )
     times, counts = [], []
     for i, frame in enumerate(frames):
-        f = frame.copy()
+        f = frame.copy()  # drawing mutates the frame; keep the shared one clean
         t0 = time.perf_counter()
         result = detector.detect(f)
         n = draw_detections(f, result)
