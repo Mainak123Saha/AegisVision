@@ -20,18 +20,18 @@ def main():
         raise SystemExit(f"Could not read image: {path}")
 
     detector = YOLODetector()
-    result = detector.detect(image)
+    detections = detector.detect(image)
 
     # Detection 1: raw detections
-    for box in result.boxes:
+    for det in detections:
         print(
-            result.names[int(box.cls[0])],
-            f"confidence={float(box.conf[0]):.2f}",
-            f"box={tuple(int(v) for v in box.xyxy[0].tolist())}",
+            det.class_name,
+            f"confidence={det.confidence:.2f}",
+            f"box={tuple(int(v) for v in det.bbox)}",
         )
 
     # Detection 2: display the boxes
-    draw_detections(image, result)
+    draw_detections(image, detections)
     cv2.imshow("YOLO test", image)
     cv2.waitKey(0)  # wait for any key
     cv2.destroyAllWindows()

@@ -1,10 +1,10 @@
 """Live AegisVision demo.
 
 Pipeline per frame:
-    VideoSource -> resize -> FrameProcessor -> YOLODetector -> draw boxes
-    -> FPS/detection overlay -> cv2.imshow
+    VideoSource -> resize -> FrameProcessor -> YOLODetector -> [ByteTracker]
+    -> draw boxes -> FPS/detection/track overlay -> cv2.imshow
 
-Run from backend/:  python -m app.video.demo [--webcam | --rtsp URL | --path FILE]
+Run from backend/:  python -m app.video.demo [--webcam | --rtsp URL | --path FILE] [--track]
 Keys: Space = pause/resume, q = quit.
 """
 import argparse
@@ -15,11 +15,12 @@ from .mp4_source import MP4Source
 from .webcam_source import WebcamSource
 from .rtsp_source import RTSPSource
 from .frame_processor import FrameProcessor
+from ..config import Config, MAX_WIDTH, add_common_args, config_from_args
 from ..detection.yolo_detector import YOLODetector
 from ..detection.visualizer import draw_detections
-
-# Frames wider than this (pixels) are downscaled before processing.
-MAX_WIDTH = 960
+from ..tracking.bytetrack import ByteTracker
+from ..tracking.tracker import TrackState
+from ..tracking.visualizer import draw_tracks
 
 
 def resize_frame(frame, max_width=MAX_WIDTH):
@@ -37,55 +38,56 @@ def resize_frame(frame, max_width=MAX_WIDTH):
     return cv2.resize(frame, (max_width, int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
-def build_source(args):
+def build_source(cfg: Config):
     """The rest of the pipeline only sees a VideoSource, never the origin of the frames."""
     # Priority: RTSP stream > webcam > MP4 file.
-    if args.rtsp:
-        return RTSPSource(args.rtsp)
-    if args.webcam:
+    if cfg.rtsp:
+        return RTSPSource(cfg.rtsp)
+    if cfg.webcam:
         return WebcamSource(0)
-    return MP4Source(args.path)
+    return MP4Source(cfg.path)
 
 
-def parse_classes(value):
-    """'person' -> ['person'], 'person,car' -> [...], 'all' -> None (no filtering)."""
-    if value.strip().lower() == "all":
-        return None
-    return [c for c in value.split(",") if c.strip()]
-
-
-def add_common_args(parser):
-    """Register the CLI options shared by the demo and the benchmark."""
-    parser.add_argument("--webcam", action="store_true", help="Use webcam instead of MP4")
-    parser.add_argument("--rtsp", default=None, help="RTSP/HTTP stream URL")
-    parser.add_argument("--path", default="assets/videos/surveillance_clip.mp4")
-    parser.add_argument("--width", type=int, default=MAX_WIDTH, help="Max frame width")
-    parser.add_argument("--model", default="yolo11n.pt", help="YOLO model weights")
-    parser.add_argument("--confidence", type=float, default=0.25, help="Min detection confidence (0-1)")
-    parser.add_argument(
-        "--classes", default="person",
-        help="Comma-separated class names to keep (e.g. person,car) or 'all'"
+def build_detector(cfg: Config):
+    """Create the YOLO detector from config."""
+    return YOLODetector(
+        cfg.model,
+        confidence=cfg.confidence,
+        classes=cfg.classes,
+        imgsz=cfg.imgsz,
     )
-    parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference size")
+
+
+def build_tracker(cfg: Config):
+    """Create the ByteTrack tracker from config."""
+    return ByteTracker(
+        track_high_thresh=cfg.track_high_thresh,
+        track_low_thresh=cfg.track_low_thresh,
+        new_track_thresh=cfg.new_track_thresh,
+        track_buffer=cfg.track_buffer,
+        match_thresh=cfg.match_thresh,
+    )
+
+
+def put_text(img, text, y, color):
+    """Draw one overlay line at row `y` on the left edge."""
+    cv2.putText(img, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
 
 def main():
-    """Parse arguments, set up source + detector, and run the display loop."""
+    """Parse arguments, set up source + detector (+ tracker), and run the display loop."""
 
     parser = argparse.ArgumentParser()
     add_common_args(parser)
     parser.add_argument("--no-detect", action="store_true", help="Disable YOLO detection")
-    args = parser.parse_args()
+    cfg = config_from_args(parser.parse_args())
 
-    source = build_source(args)
+    source = build_source(cfg)
     processor = FrameProcessor()
-    # detector stays None when --no-detect is given, turning the demo into a plain player.
-    detector = None if args.no_detect else YOLODetector(
-        args.model,
-        confidence=args.confidence,
-        classes=parse_classes(args.classes),
-        imgsz=args.imgsz,
-    )
+    # detector stays None with --no-detect, turning the demo into a plain player.
+    detector = build_detector(cfg) if cfg.detect else None
+    # Tracking needs detections, so it is only active when both are enabled.
+    tracker = build_tracker(cfg) if (cfg.track and detector is not None) else None
 
     fps = source.fps
 
@@ -99,6 +101,8 @@ def main():
     paused = False
     frame = None  # last processed frame, re-shown while paused
     num_detections = 0
+    active_tracks = 0
+    lost_tracks = 0
     processing_fps = 0.0  # smoothed measured throughput
 
     while True:
@@ -113,14 +117,24 @@ def main():
 
             t0 = time.perf_counter()
 
-            frame = resize_frame(frame, args.width)
+            frame = resize_frame(frame, cfg.width)
             frame = processor.process(frame)
 
             num_detections = 0
+            active_tracks = 0
+            lost_tracks = 0
             if detector is not None:
-                result = detector.detect(frame)
-                # Boxes are drawn onto `frame` in place; returns how many were drawn.
-                num_detections = draw_detections(frame, result)
+                detections = detector.detect(frame)
+                num_detections = len(detections)
+
+                if tracker is not None:
+                    # Detections -> persistent IDs. Boxes are drawn from tracks, not raw detections.
+                    tracks = tracker.update(detections, frame)
+                    active_tracks = draw_tracks(frame, tracks, cfg.show_lost)
+                    lost_tracks = sum(1 for t in tracks if t.state == TrackState.LOST)
+                else:
+                    # Boxes are drawn onto `frame` in place.
+                    draw_detections(frame, detections)
 
             # Actual processing FPS (smoothed), excludes display/wait time
             dt = time.perf_counter() - t0
@@ -132,49 +146,26 @@ def main():
         # Draw the overlay on a copy so the stored frame stays clean (no stacking text while paused).
         display = frame.copy()
 
+        y = 40
         # Display video's FPS
-        cv2.putText(
-            display,
-            f"FPS: {fps:.1f}",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 0),
-            2
-        )
-
+        put_text(display, f"FPS: {fps:.1f}", y, (0, 255, 0))
+        y += 40
         # Display actual processing FPS
-        cv2.putText(
-            display,
-            f"Processing FPS: {processing_fps:.1f}",
-            (20, 80),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 255),
-            2
-        )
-
+        put_text(display, f"Processing FPS: {processing_fps:.1f}", y, (0, 255, 255))
+        y += 40
         # Display number of detections
-        cv2.putText(
-            display,
-            f"Detections: {num_detections}",
-            (20, 120),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (255, 255, 0),
-            2
-        )
+        put_text(display, f"Detections: {num_detections}", y, (255, 255, 0))
+        y += 40
+
+        if tracker is not None:
+            # Active = currently visible tracked objects; Lost = remembered but unmatched.
+            put_text(display, f"Active Tracks: {active_tracks}", y, (255, 0, 255))
+            y += 40
+            put_text(display, f"Lost Tracks: {lost_tracks}", y, (160, 160, 160))
+            y += 40
 
         if paused:
-            cv2.putText(
-                display,
-                "PAUSED",
-                (20, 160),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2
-            )
+            put_text(display, "PAUSED", y, (0, 0, 255))
 
         cv2.imshow("AegisVision", display)
 

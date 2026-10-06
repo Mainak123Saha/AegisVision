@@ -1,6 +1,9 @@
+from typing import List
+
 from ultralytics import YOLO
 
 from .detector import Detector
+from .models import Detection
 
 
 class YOLODetector(Detector):
@@ -37,8 +40,8 @@ class YOLODetector(Detector):
             ids.append(name_to_id[key])
         return ids
 
-    def detect(self, frame):
-        """Run YOLO on `frame` and return the Ultralytics Results for that single image."""
+    def detect(self, frame) -> List[Detection]:
+        """Run YOLO on `frame` and return its detections as `Detection` objects."""
         results = self.model(
             frame,
             conf=self.confidence,
@@ -47,4 +50,19 @@ class YOLODetector(Detector):
             verbose=False,  # silence Ultralytics' per-frame console output
         )
         # One image in -> one Results object out.
-        return results[0]
+        result = results[0]
+        names = result.names  # id -> class name
+
+        detections = []
+        for box in result.boxes:
+            class_id = int(box.cls[0])
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            detections.append(
+                Detection(
+                    class_id=class_id,
+                    class_name=names[class_id],
+                    confidence=float(box.conf[0]),
+                    x1=x1, y1=y1, x2=x2, y2=y2,
+                )
+            )
+        return detections
