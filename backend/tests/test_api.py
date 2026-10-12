@@ -85,6 +85,10 @@ def test_events_filters_pagination_and_summary(client):
 
     s = client.get("/api/analytics/summary").json()
     assert (s["total_events"], s["intrusion_events"], s["loitering_events"], s["line_crossed_events"]) == (4, 2, 1, 1)
+    assert (s["visitors_in"], s["visitors_out"]) == (1, 0)
+    hourly = client.get("/api/analytics/hourly").json()
+    assert sum(b["total"] for b in hourly) == 4 and sum(b["by_type"].get("LOITERING", 0) for b in hourly) == 1
+    assert client.get("/api/analytics/hourly", params={"start": "2000-01-01T00:00:00Z"}).status_code == 422
     assert client.get("/api/analytics/summary", params={"camera_id": cid}).json()["total_events"] == 3
     assert client.get("/api/analytics/summary", params={"start": "2999-01-01T00:00:00Z"}).status_code == 422
     assert client.get("/api/analytics/summary", params={"start": "2000-01-01T00:00:00Z", "end": "2000-01-02T00:00:00Z"}).json()["total_events"] == 0

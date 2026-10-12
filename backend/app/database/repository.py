@@ -94,7 +94,21 @@ class EventRepository:
             select(Event.severity, func.count()).where(*conds).group_by(Event.severity)).all())
         by_cam = dict(self.db.execute(
             select(Event.camera_id, func.count()).where(*conds).group_by(Event.camera_id)).all())
-        return {"by_type": by_type, "by_severity": by_sev, "by_camera": by_cam}
+        # Visitor counts: line crossings split by direction (stored in the JSONB metadata).
+        direction = Event.event_metadata["direction"].astext
+        by_dir = dict(self.db.execute(
+            select(direction, func.count())
+            .where(*conds, Event.event_type == "LINE_CROSSED")
+            .group_by(direction)).all())
+        return {"by_type": by_type, "by_severity": by_sev, "by_camera": by_cam, "by_direction": by_dir}
+
+    def hourly(self, *, start, end, camera_id=None) -> List[Tuple[datetime, str, int]]:
+        """(hour, event_type, count) rows, hours in UTC."""
+        conds = self._filters(None, None, camera_id, start, end)
+        hour = func.date_trunc("hour", func.timezone("UTC", Event.created_at)).label("hour")
+        return [(h, t, c) for h, t, c in self.db.execute(
+            select(hour, Event.event_type, func.count()).where(*conds)
+            .group_by(hour, Event.event_type).order_by(hour)).all()]
 
 
 class CameraRepository:

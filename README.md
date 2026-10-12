@@ -1,6 +1,6 @@
 # AegisVision
 
-Real-time video analytics. Current state (Weeks 1–5): a video pipeline that reads frames from any source, runs YOLO detection, tracks objects with ByteTrack (persistent IDs + lifecycle), and turns tracked behaviour into events (line crossing, restricted-zone intrusion, loitering) shown live on the video. Week 5 adds a FastAPI + PostgreSQL backend that stores events and controls camera processing.
+Real-time video analytics. Current state (Weeks 1–6): a video pipeline that reads frames from any source, runs YOLO detection, tracks objects with ByteTrack (persistent IDs + lifecycle), and turns tracked behaviour into events (line crossing, restricted-zone intrusion, loitering) shown live on the video. Week 5 adds a FastAPI + PostgreSQL backend that stores events and controls camera processing, and Week 6 adds a React + TypeScript dashboard on top of that API.
 
 ## Pipeline
 
@@ -16,6 +16,14 @@ The detector never knows where a frame came from: every source implements the sa
 ## Project layout
 
 ```
+frontend/                       React + TypeScript dashboard (Vite)
+├── .env                        VITE_API_BASE_URL
+└── src/
+    ├── api/                    client.ts (fetch + ApiError), cameras.ts, events.ts, analytics.ts
+    ├── types/                  camera.ts, event.ts
+    ├── hooks/queries.ts        React Query hooks (polling every 5 s)
+    ├── components/             layout/ (Sidebar, Header), common/, dashboard/, cameras/, events/, charts/
+    └── pages/                  Dashboard, Cameras, Events, Analytics
 backend/
 ├── requirements.txt
 ├── .env.example                Template for DATABASE_URL etc. (copy to .env, which is gitignored)
@@ -286,13 +294,42 @@ Credentials come from environment variables / `backend/.env` (never committed). 
 | `GET/PATCH/DELETE /api/cameras/{id}` | Read / update (source locked while running) / delete (stops it first) |
 | `POST /api/cameras/{id}/start`, `/stop` | Start / stop processing (409 if already running / not running) |
 | `GET /api/cameras/{id}/status` | running, pid, started_at, events_persisted, last_error |
-| `GET /api/analytics/summary` | `total_events`, `intrusion_events`, `loitering_events`, `line_crossed_events`, `by_type`, `by_severity`, `by_camera` for `start`/`end` (default: last 24 h) and optional `camera_id` |
+| `GET /api/analytics/hourly` | Events per hour with per-type counts (Week 6) |
+| `GET /api/analytics/summary` | `total_events`, `intrusion_events`, `loitering_events`, `line_crossed_events`, `visitors_in/out`, `by_type`, `by_severity`, `by_camera` for `start`/`end` (default: last 24 h) and optional `camera_id` |
 
 **Error handling:** 404 unknown camera/event, 409 duplicate name or wrong start/stop state, 422 invalid input or a missing video file, 503 when the database is unreachable, and 500 with a generic message for anything else (details go to the log, not the client).
 
 **Verified:** `/health` responds with no camera running; a real clip run produced `INTRUSION_DETECTED` and `LINE_CROSSED` rows that were still returned after restarting the server; start/stop (including double start/stop) behaves correctly and leaves no stray processes; summary counts and filters match the stored data (6 automated tests in `tests/test_api.py`).
 
 **Limitations:** all cameras use the same `config/zones.json`; cameras do not resume after an API restart (all are marked inactive at startup); there is no authentication yet; RTSP and webcam start paths were not exercised through the API.
+
+## Dashboard (Week 6)
+
+A dark, responsive React + TypeScript app (Vite, Tailwind CSS v4, React Router, TanStack Query, Recharts, lucide icons) that shows only data returned by the FastAPI backend; nothing is hard-coded or mocked.
+
+```bash
+# terminal 1 – API (from backend/)
+uvicorn app.main:app --reload
+# terminal 2 – dashboard (from frontend/)
+npm install
+npm run dev          # http://localhost:5173  (API URL: frontend/.env -> VITE_API_BASE_URL)
+npm run build        # type-check + production build
+```
+
+| Page | What it shows (source) |
+|---|---|
+| **Dashboard** | Cameras monitoring (`/api/cameras/{id}/status`), today's events, intrusion alerts and visitor counts (`/api/analytics/summary`), events-per-hour chart (`/api/analytics/hourly`), latest events |
+| **Cameras** | Camera records plus their *real* processing state; add / delete cameras, **Start monitoring / Stop** |
+| **Events** | Paginated table with type, severity and camera filters (`/api/events`) |
+| **Analytics** | 24 h / 7 d / 30 d range: totals, hourly trend, incident-type and severity donuts, events per camera |
+
+Notes:
+
+- Styling is Tailwind utility classes in the components; the only CSS file is `src/index.css` (Tailwind import, theme colours/animation, page background). Shared pieces (`Card`, `Button`, `StatusPill`, input classes) live in `components/common/ui.tsx`.
+- A camera *record* is not a running stream: the UI takes the "Monitoring / Stopped / Failed" state from the backend's worker status, never from the fact that a record exists. Data refreshes automatically (every 5 s).
+- Every query has loading, empty and error states (with Retry); a header indicator shows API/database health.
+- "Today" means the browser's local day. Hourly buckets are UTC on the server and shown in local time. Visitor counts are line crossings in the `IN` direction, so they are only as accurate as the tracker.
+- Backend additions for the dashboard: `GET /api/analytics/hourly` (events per hour, empty hours included, max 31 days) and `visitors_in` / `visitors_out` in `/api/analytics/summary`. CORS allows `http://localhost:5173` and `http://127.0.0.1:5173` (override with `CORS_ORIGINS`).
 
 ## Testing the sources
 
@@ -340,4 +377,4 @@ Takeaways:
 
 ## Next steps
 
-Week 6: React + TypeScript dashboard (camera controls, events, analytics) on top of this API. Later: per-camera zone configuration, authentication, tracker tuning on your own footage, other optimisations (ONNX/OpenVINO export, frame skipping), GPU comparison, and a real RTSP test.
+Dashboard polish (live video/snapshot view, zone editor, event detail pages, WebSocket push instead of polling). Later: per-camera zone configuration, authentication, tracker tuning on your own footage, other optimisations (ONNX/OpenVINO export, frame skipping), GPU comparison, and a real RTSP test.

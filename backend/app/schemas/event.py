@@ -33,6 +33,14 @@ class AnalyticsSummary(BaseModel):
     intrusion_events: int
     loitering_events: int
     line_crossed_events: int
+    visitors_in: int = 0
+    visitors_out: int = 0
     by_type: Dict[str, int]
     by_severity: Dict[str, int]
     by_camera: Dict[str, int]
+
+
+class HourlyBucket(BaseModel):
+    hour: datetime
+    total: int
+    by_type: Dict[str, int]

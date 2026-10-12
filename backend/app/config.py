@@ -153,5 +153,5 @@ def load_settings() -> Settings:
         model=os.getenv("YOLO_MODEL", "yolo11n.pt"),
         track_events=True,
         db_echo=os.getenv("DB_ECHO", "0") == "1",
-        cors_origins=[o for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o],
+        cors_origins=[o for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o],
     )
