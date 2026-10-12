@@ -114,3 +114,44 @@ def config_from_args(args) -> Config:
         headless=args.headless,
         max_frames=args.max_frames,
     )
+
+
+# ---------------------------------------------------------------------------
+# Backend (FastAPI / PostgreSQL) settings. Values come from environment
+# variables (optionally loaded from backend/.env) - never hard-code credentials.
+# ---------------------------------------------------------------------------
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:  # python-dotenv is optional; real env vars still work
+    pass
+
+
+@dataclass(frozen=True)
+class Settings:
+    # SQLAlchemy URL, e.g. postgresql+psycopg://user:password@localhost:5432/aegisvision
+    database_url: str
+    # Analytics zones/lines used by every camera pipeline started through the API.
+    zones_path: str
+    model: str
+    track_events: bool
+    db_echo: bool
+    cors_origins: List[str]
+
+
+def load_settings() -> Settings:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not set (see backend/.env.example)")
+    return Settings(
+        database_url=database_url,
+        zones_path=os.getenv("ZONES_PATH", "config/zones.json"),
+        model=os.getenv("YOLO_MODEL", "yolo11n.pt"),
+        track_events=True,
+        db_echo=os.getenv("DB_ECHO", "0") == "1",
+        cors_origins=[o for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o],
+    )

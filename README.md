@@ -1,6 +1,6 @@
 # AegisVision
 
-Real-time video analytics. Current state (Weeks 1–4): a video pipeline that reads frames from any source, runs YOLO detection, tracks objects with ByteTrack (persistent IDs + lifecycle), and turns tracked behaviour into events (line crossing, restricted-zone intrusion, loitering) shown live on the video.
+Real-time video analytics. Current state (Weeks 1–5): a video pipeline that reads frames from any source, runs YOLO detection, tracks objects with ByteTrack (persistent IDs + lifecycle), and turns tracked behaviour into events (line crossing, restricted-zone intrusion, loitering) shown live on the video. Week 5 adds a FastAPI + PostgreSQL backend that stores events and controls camera processing.
 
 ## Pipeline
 
@@ -18,10 +18,20 @@ The detector never knows where a frame came from: every source implements the sa
 ```
 backend/
 ├── requirements.txt
+├── .env.example                Template for DATABASE_URL etc. (copy to .env, which is gitignored)
+├── alembic.ini, alembic/       Database migrations
+├── tests/test_api.py           API tests (PostgreSQL)
 ├── config/zones.json           Sample lines/zones for analytics
 ├── assets/videos/              Test videos
 └── app/
-    ├── config.py               Config dataclass + CLI argument definitions
+    ├── main.py                 FastAPI app, error handlers, /health
+    ├── config.py               Config dataclass + CLI arguments + backend Settings (env vars)
+    ├── api/                    cameras.py, events.py, analytics.py routers (+ deps.py)
+    ├── database/               db.py (engine/session), models.py (Camera, Event), repository.py
+    ├── schemas/                Pydantic models: camera.py, event.py
+    ├── services/
+    │   ├── vision_service.py   Starts/stops camera worker processes, persists their events
+    │   └── vision_worker.py    The per-camera pipeline (runs in its own process)
     ├── video/
     │   ├── source.py           VideoSource ABC: read(), release()
     │   ├── mp4_source.py       MP4Source(path)
@@ -231,6 +241,59 @@ It checks zones (4.1), line crossing incl. direction, two people with different 
 
 > **Known limitation:** analytics are only as good as the tracker. On the crowded sample clip ByteTrack still fragments some identities, so one person can appear as several IDs and produce several events. Tuning `--confidence`, `--new-track-thresh` and `--track-buffer` improves this.
 
+## Backend API (Week 5)
+
+FastAPI + PostgreSQL turn the pipeline into an application that stores and serves events. **The vision engine is kept separate from FastAPI**: the API never runs the video loop inside a request handler.
+
+```
+Camera (MP4/webcam/RTSP) → worker process: OpenCV → YOLO → ByteTrack → AnalyticsEngine
+                                   │  event dicts over a multiprocessing queue
+                                   ▼
+                     API process (writer thread) → PostgreSQL ← FastAPI REST API
+```
+
+`POST /api/cameras/{id}/start` spawns a worker process (`services/vision_worker.py`); `stop` signals it, waits, then terminates it if it hangs. A worker crash cannot take the API down. The API process saves events in batches, retries on database errors (5 attempts with backoff), and ignores duplicate `event_id`s.
+
+**Run**
+
+```bash
+cd backend
+cp .env.example .env              # set DATABASE_URL, e.g. postgresql+psycopg://user:pass@localhost:5432/aegisvision
+alembic upgrade head              # create the tables
+uvicorn app.main:app --reload     # docs at http://localhost:8000/docs
+pytest                            # uses TEST_DATABASE_URL (default: aegisvision_test)
+```
+
+Credentials come from environment variables / `backend/.env` (never committed). Optional: `ZONES_PATH`, `YOLO_MODEL`, `CORS_ORIGINS`, `DB_ECHO`.
+
+**Database** (PostgreSQL, SQLAlchemy 2, Alembic)
+
+| Table | Fields |
+|---|---|
+| `cameras` | id, name (unique), source_type (`mp4`/`webcam`/`rtsp`), source_uri, location, is_active, created_at |
+| `events` | event_id (PK), event_type, track_id, camera_id (FK, `SET NULL` on delete), timestamp (stream seconds), severity, metadata (JSONB), created_at |
+
+`events` mirrors the analytics `Event` dataclass, so the rules are unchanged. `source_uri` was added to `cameras` (file path, device index or stream URL) because the API needs it to start processing. The analytics `camera_id` string is replaced with the integer camera id by the worker. Video frames are never stored.
+
+**Endpoints**
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Always 200 while FastAPI is up; reports `database: up/down` |
+| `GET /api/events` | Filters `event_type`, `severity`, `camera_id`, `start`, `end`; pagination `limit` (1–500), `offset`; returns `{items, total, limit, offset}` |
+| `GET /api/events/{event_id}` | One event |
+| `GET/POST /api/cameras` | List / create |
+| `GET/PATCH/DELETE /api/cameras/{id}` | Read / update (source locked while running) / delete (stops it first) |
+| `POST /api/cameras/{id}/start`, `/stop` | Start / stop processing (409 if already running / not running) |
+| `GET /api/cameras/{id}/status` | running, pid, started_at, events_persisted, last_error |
+| `GET /api/analytics/summary` | `total_events`, `intrusion_events`, `loitering_events`, `line_crossed_events`, `by_type`, `by_severity`, `by_camera` for `start`/`end` (default: last 24 h) and optional `camera_id` |
+
+**Error handling:** 404 unknown camera/event, 409 duplicate name or wrong start/stop state, 422 invalid input or a missing video file, 503 when the database is unreachable, and 500 with a generic message for anything else (details go to the log, not the client).
+
+**Verified:** `/health` responds with no camera running; a real clip run produced `INTRUSION_DETECTED` and `LINE_CROSSED` rows that were still returned after restarting the server; start/stop (including double start/stop) behaves correctly and leaves no stray processes; summary counts and filters match the stored data (6 automated tests in `tests/test_api.py`).
+
+**Limitations:** all cameras use the same `config/zones.json`; cameras do not resume after an API restart (all are marked inactive at startup); there is no authentication yet; RTSP and webcam start paths were not exercised through the API.
+
 ## Testing the sources
 
 ```bash
@@ -277,4 +340,4 @@ Takeaways:
 
 ## Next steps
 
-Week 4 analytics (line crossing, restricted zones, loitering) built on `Track` objects, tracker tuning on your own footage, other optimisations (ONNX/OpenVINO export, frame skipping), GPU comparison, and a real RTSP test.
+Week 6: React + TypeScript dashboard (camera controls, events, analytics) on top of this API. Later: per-camera zone configuration, authentication, tracker tuning on your own footage, other optimisations (ONNX/OpenVINO export, frame skipping), GPU comparison, and a real RTSP test.
