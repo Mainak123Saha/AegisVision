@@ -1,23 +1,25 @@
 # AegisVision
 
-Real-time video analytics. Current state (Weeks 1–3): a video pipeline that reads frames from any source, runs YOLO object detection on every frame, optionally tracks objects with ByteTrack (persistent IDs + lifecycle), and displays boxes with live performance numbers. No intrusion/analytics rules yet.
+Real-time video analytics. Current state (Weeks 1–4): a video pipeline that reads frames from any source, runs YOLO detection, tracks objects with ByteTrack (persistent IDs + lifecycle), and turns tracked behaviour into events (line crossing, restricted-zone intrusion, loitering) shown live on the video.
 
 ## Pipeline
 
 ```
  MP4 ─────┐
- Webcam ──┼──► VideoSource.read() ─► resize ─► FrameProcessor ─► YOLODetector ─► [ByteTracker] ─► draw ─► overlay ─► cv2.imshow
- RTSP ────┘                                                        (Detections)    (Tracks, --track)
+ Webcam ──┼──► VideoSource ─► resize ─► FrameProcessor ─► YOLODetector ─► ByteTracker ─► AnalyticsEngine ─► draw ─► overlay ─► cv2.imshow
+ RTSP ────┘                                                (Detections)    (Tracks)       (Events)
+                                                                           --track        --zones
 ```
 
-The detector never knows where a frame came from: every source implements the same `VideoSource` interface.
+The detector never knows where a frame came from: every source implements the same `VideoSource` interface. Tracking and analytics are optional stages.
 
 ## Project layout
 
 ```
 backend/
 ├── requirements.txt
-├── assets/videos/surveillance_clip.mp4
+├── config/zones.json           Sample lines/zones for analytics
+├── assets/videos/              Test videos
 └── app/
     ├── config.py               Config dataclass + CLI argument definitions
     ├── video/
@@ -34,11 +36,20 @@ backend/
     │   ├── yolo_detector.py    YOLODetector (Ultralytics YOLO)
     │   ├── visualizer.py       draw_box / draw_detections
     │   └── test_yolo.py        Run YOLO on a single image
-    └── tracking/
-        ├── tracker.py          Track, TrackState, Tracker ABC
-        ├── bytetrack.py        ByteTracker (adapter over Ultralytics BYTETracker)
-        ├── visualizer.py       draw_tracks ("Person #7")
-        └── test_tracking.py    Synthetic lifecycle test + video ID statistics
+    ├── tracking/
+    │   ├── tracker.py          Track, TrackState, Tracker ABC
+    │   ├── bytetrack.py        ByteTracker (adapter over Ultralytics BYTETracker)
+    │   ├── visualizer.py       draw_tracks ("Person #7")
+    │   └── test_tracking.py    Synthetic lifecycle test + video ID statistics
+    └── analytics/
+        ├── zones.py            Zone (polygon) and Line geometry
+        ├── line_crossing.py    LINE_CROSSED events with IN/OUT direction
+        ├── intrusion.py        INTRUSION_DETECTED events
+        ├── loitering.py        LOITERING events
+        ├── events.py           Event model, EventType, Severity, rule interface
+        ├── engine.py           AnalyticsEngine + JSON config loader
+        ├── visualizer.py       Zones, lines, event banners, statistics
+        └── test_analytics.py   Independent tests for every rule
 ```
 
 ## Setup
@@ -139,6 +150,86 @@ Track:     track_id, class_id, class_name, confidence, x1, y1, x2, y2, state, ag
 | `--show-lost` | off | Draw LOST tracks |
 
 > The detector's `--confidence` (default 0.25) filters boxes *before* the tracker. ByteTrack's low-score recovery stage (`--track-low-thresh`) only has an effect if you lower `--confidence` to around 0.1, at the cost of more false boxes.
+
+## Analytics (Week 4)
+
+```
+Tracks ──┬─► LineCrossingDetector ─┐
+         ├─► IntrusionDetector ────┼─► Event ─► AnalyticsEngine ─► overlay / events log / (later) API + DB
+         └─► LoiteringDetector ────┘
+```
+
+YOLO is computer vision, ByteTrack is temporal tracking, and `analytics/` is the application logic that decides what tracked behaviour *means*. Rules only consume `Track` objects, never detections or pixels.
+
+| Module | Purpose |
+|---|---|
+| `zones.py` | `Zone` (polygon, `contains(point)`), `Line` (directed segment, `side()`, `crosses()`), `anchor_point()` |
+| `line_crossing.py` | `LineCrossingDetector` → `LINE_CROSSED` with `direction` `IN`/`OUT` |
+| `intrusion.py` | `IntrusionDetector` → `INTRUSION_DETECTED` once per entry into a zone |
+| `loitering.py` | `LoiteringDetector` → `LOITERING` once a track has stayed in a zone ≥ N seconds |
+| `events.py` | `Event`, `EventType`, `Severity`, `AnalyticsRule` base class |
+| `engine.py` | `AnalyticsEngine` (runs all rules, keeps history + statistics), `build_engine` / `load_engine` from JSON |
+| `visualizer.py` | Zones, lines (with an IN arrow), event banners, statistics |
+
+**Event model** – every rule returns the same structure (`Event.to_dict()` gives JSON ready for an API/DB):
+
+```
+Event: event_type, track_id, timestamp, camera_id, metadata, severity, event_id, created_at
+```
+
+e.g. `LINE_CROSSED, track_id=7, camera_id=store_cam_1, metadata={line_id, direction: "IN", ...}, severity=INFO`.
+Severity: line crossing = INFO, loitering = WARNING, intrusion = CRITICAL.
+
+**How each rule works**
+
+- **Position:** a track is located by the *bottom-centre* of its box (the feet). Use `anchor="center"` in code for other cases.
+- **Line crossing:** remembers each track's previous position and side of the line. An event fires when the move from the previous to the current position actually crosses the *finite* segment (walking around the end of a line does not count). For a line drawn left → right, moving top → bottom is `IN`, bottom → top is `OUT`; swap the two points to flip it (the arrow on screen shows the IN side). A 1 s per-track `cooldown` prevents jitter on the line from firing repeatedly.
+- **Intrusion:** fires on outside → inside. Staying inside does not re-fire. A track must be outside for `exit_grace` (1 s) before leaving counts, so boundary jitter does not create new intrusions.
+- **Loitering:** stores `entered_at` per track and zone; when `now - entered_at ≥ loiter_seconds` it fires once for that visit. The same grace period protects the timer against boundary jitter.
+- **Track lifecycle:** `LOST` tracks keep their state (a person briefly hidden does not restart timers or re-fire events); `REMOVED` tracks are forgotten.
+- **Time:** rules use *stream time*: `frame_index / fps` for files (correct even when processing is slower than real time) and elapsed wall-clock time for webcam/RTSP.
+
+**Configuration** (`config/zones.json`, coordinates are normalized 0–1 so they work at any resolution; use `"coords": "pixel"` for pixels):
+
+```json
+{
+  "camera_id": "store_cam_1",
+  "coords": "normalized",
+  "lines": [{"id": "entrance_aisle", "name": "Entrance", "points": [[0.06, 0.42], [0.42, 0.42]], "cooldown": 1.0}],
+  "zones": [
+    {"id": "staff_area", "name": "Staff area", "points": [[0.55,0.12],[0.95,0.12],[0.95,0.40],[0.58,0.52]], "rules": ["intrusion"]},
+    {"id": "waiting_area", "name": "Waiting area", "points": [[0.18,0.5],[0.5,0.5],[0.55,0.95],[0.08,0.95]], "rules": ["loitering"], "loiter_seconds": 5}
+  ]
+}
+```
+
+A zone can have `"rules": ["intrusion", "loitering"]` at the same time. **The sample coordinates were drawn by eye for the current default clip; redraw them for your own camera.**
+
+```bash
+python -m app.video.demo --track --zones config/zones.json                       # live window
+python -m app.video.demo --track --zones config/zones.json --events-log events.jsonl   # also log events (JSON lines)
+python -m app.video.demo --track --zones config/zones.json --headless --output annotated.mp4 --max-frames 900
+```
+
+On screen: zones (red = intrusion, orange = loitering), the line with its IN arrow, boxes of people currently in an alert state drawn in red with `!`, event banners at the bottom-left (`! LINE CROSSING / Person #7 / Direction: IN`), and running totals at the top-right. Events are also printed to the console, and `--zones` requires `--track`.
+
+| New option | Meaning |
+|---|---|
+| `--zones FILE` | Enable analytics with this JSON config (requires `--track`) |
+| `--events-log FILE` | Append every event as one JSON line |
+| `--output FILE` | Save the annotated video |
+| `--headless` | No window, run as fast as possible (for batch runs/tests) |
+| `--max-frames N` | Stop after N frames |
+
+**Tests** – each module is tested independently with synthetic tracks (no video, no YOLO):
+
+```bash
+python -m app.analytics.test_analytics
+```
+
+It checks zones (4.1), line crossing incl. direction, two people with different IDs, walking around a line end and jitter (4.2), intrusion incl. re-entry and edge jitter (4.3), loitering incl. quick pass-through and boundary jitter (4.4), and the event model plus engine statistics (4.5).
+
+> **Known limitation:** analytics are only as good as the tracker. On the crowded sample clip ByteTrack still fragments some identities, so one person can appear as several IDs and produce several events. Tuning `--confidence`, `--new-track-thresh` and `--track-buffer` improves this.
 
 ## Testing the sources
 

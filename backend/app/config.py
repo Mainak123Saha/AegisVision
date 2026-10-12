@@ -35,6 +35,15 @@ class Config:
     match_thresh: float = 0.8
     show_lost: bool = False
 
+    # --- analytics (needs tracking) ---
+    zones: Optional[str] = None        # JSON file defining lines/zones (see config/zones.json)
+    events_log: Optional[str] = None   # append events as JSON lines to this file
+
+    # --- output ---
+    output: Optional[str] = None       # write the annotated video to this file
+    headless: bool = False             # no window; process as fast as possible
+    max_frames: int = 0                # stop after this many frames (0 = whole video)
+
 
 def parse_classes(value):
     """'person' -> ['person'], 'person,car' -> [...], 'all' -> None (no filtering)."""
@@ -69,6 +78,16 @@ def add_common_args(parser):
     parser.add_argument("--match-thresh", type=float, default=d.match_thresh)
     parser.add_argument("--show-lost", action="store_true", help="Also draw LOST tracks (grey)")
 
+    # Analytics
+    parser.add_argument("--zones", default=d.zones,
+                        help="JSON file with lines/zones for line-crossing, intrusion and loitering (requires --track)")
+    parser.add_argument("--events-log", default=d.events_log, help="Append events as JSON lines to this file")
+
+    # Output
+    parser.add_argument("--output", default=d.output, help="Save the annotated video to this file (e.g. out.mp4)")
+    parser.add_argument("--headless", action="store_true", help="No window; run as fast as possible")
+    parser.add_argument("--max-frames", type=int, default=d.max_frames, help="Stop after N frames (0 = all)")
+
 
 def config_from_args(args) -> Config:
     """Build a Config from parsed CLI arguments (extra demo-only flags are ignored)."""
@@ -89,4 +108,9 @@ def config_from_args(args) -> Config:
         track_buffer=args.track_buffer,
         match_thresh=args.match_thresh,
         show_lost=args.show_lost,
+        zones=args.zones,
+        events_log=args.events_log,
+        output=args.output,
+        headless=args.headless,
+        max_frames=args.max_frames,
     )
