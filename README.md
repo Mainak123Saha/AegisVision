@@ -294,6 +294,9 @@ Credentials come from environment variables / `backend/.env` (never committed). 
 | `GET/PATCH/DELETE /api/cameras/{id}` | Read / update (source locked while running) / delete (stops it first) |
 | `POST /api/cameras/{id}/start`, `/stop` | Start / stop processing (409 if already running / not running) |
 | `GET /api/cameras/{id}/status` | running, pid, started_at, events_persisted, last_error |
+| `GET /api/cameras/{id}/stream` | Live MJPEG view with overlays (use as `<img src>`; 409 if the camera isn't running) |
+| `GET /api/cameras/{id}/live` | Latest frame details: tracked people (id, confidence, alert), FPS, running totals |
+| `GET/PATCH /api/cameras/{id}/overlay` | Turn overlays on/off: `boxes, ids, confidence, zones, events, trails, stats, fps` |
 | `GET /api/analytics/hourly` | Events per hour with per-type counts (Week 6) |
 | `GET /api/analytics/summary` | `total_events`, `intrusion_events`, `loitering_events`, `line_crossed_events`, `visitors_in/out`, `by_type`, `by_severity`, `by_camera` for `start`/`end` (default: last 24 h) and optional `camera_id` |
 
@@ -319,9 +322,11 @@ npm run build        # type-check + production build
 | Page | What it shows (source) |
 |---|---|
 | **Dashboard** | Cameras monitoring (`/api/cameras/{id}/status`), today's events, intrusion alerts and visitor counts (`/api/analytics/summary`), events-per-hour chart (`/api/analytics/hourly`), latest events |
-| **Cameras** | Camera records plus their *real* processing state; add / delete cameras, **Start monitoring / Stop** |
+| **Cameras** | Camera records plus their *real* processing state; add / delete cameras, **Start monitoring / Stop**, and **Live view** (see below) |
 | **Events** | Paginated table with type, severity and camera filters (`/api/events`) |
 | **Analytics** | 24 h / 7 d / 30 d range: totals, hourly trend, incident-type and severity donuts, events per camera |
+
+**Live view.** While a camera is running, *Live view* opens the processed video in the browser with boxes, person IDs, confidence, zones/lines, event banners, trails, totals and FPS. Each overlay is a toggle that takes effect immediately (the worker applies it on its next frame), and a side panel lists everyone currently tracked with ID, confidence and alert state. The worker renders and JPEG-encodes frames **only while a browser is watching**, so unwatched cameras cost nothing extra; MP4 files play at their own speed while watched. Overlay choices only change the stream, never what is detected or stored, and are kept in API memory (reset on API restart).
 
 Notes:
 

@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Header from "./components/layout/Header";
 import Sidebar from "./components/layout/Sidebar";
 import Analytics from "./pages/Analytics";
+import CameraLive from "./pages/CameraLive";
 import Cameras from "./pages/Cameras";
 import Dashboard from "./pages/Dashboard";
 import Events from "./pages/Events";
@@ -23,6 +24,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/cameras" element={<Cameras />} />
+                <Route path="/cameras/:cameraName" element={<CameraLive />} />
                 <Route path="/events" element={<Events />} />
                 <Route path="/analytics" element={<Analytics />} />
                 <Route path="*" element={<Navigate to="/" replace />} />

@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..config import Settings
 from ..database import db as dbmod
 from ..database.repository import CameraRepository, EventRepository
+from .overlay import DEFAULT_MASK, apply_changes, mask_to_dict
 from .vision_worker import BACKEND_DIR, resolve_path, run_camera_pipeline
 
 log = logging.getLogger("aegis.vision")
@@ -42,6 +43,8 @@ class _Handle:
     started_at: datetime
     events_persisted: int = 0
     last_error: Optional[str] = None
+    last_view: Any = None      # shared float: when a browser last asked for frames
+    frame_queue: Any = None
 
 
 class VisionService:
@@ -52,6 +55,9 @@ class VisionService:
         self._handles: Dict[int, _Handle] = {}
         self._last_error: Dict[int, str] = {}
         self._lock = threading.RLock()
+        # Live view: overlay bit masks (shared with the workers) and the newest frame per camera.
+        self._masks: Dict[int, Any] = {}
+        self._frames: Dict[int, tuple] = {}   # camera_id -> (seq, jpeg_bytes, meta)
         self._drain_stop = threading.Event()
         self._drain_thread: Optional[threading.Thread] = None
 
@@ -95,18 +101,23 @@ class VisionService:
             self._handles.pop(camera.id, None)
             self._last_error.pop(camera.id, None)
             stop_event = self._ctx.Event()
+            frame_queue = self._ctx.Queue(maxsize=2)
+            last_view = self._ctx.Value("d", 0.0)
+            self._frames.pop(camera.id, None)
             proc = self._ctx.Process(
                 target=run_camera_pipeline,
                 args=(
                     {"id": camera.id, "source_type": camera.source_type, "source_uri": camera.source_uri},
                     {"zones_path": self.settings.zones_path, "model": self.settings.model},
-                    self._queue, stop_event,
+                    self._queue, stop_event, frame_queue, self._mask(camera.id), last_view,
                 ),
                 name=f"camera-{camera.id}", daemon=True,
             )
             proc.start()
-            h = _Handle(proc, stop_event, datetime.now(timezone.utc))
+            h = _Handle(proc, stop_event, datetime.now(timezone.utc), last_view=last_view, frame_queue=frame_queue)
             self._handles[camera.id] = h
+            threading.Thread(target=self._frame_loop, args=(camera.id, h), name=f"frames-{camera.id}",
+                             daemon=True).start()
             return h
 
     def stop(self, camera_id: int, timeout: float = 10.0) -> None:
@@ -124,6 +135,47 @@ class VisionService:
                     h.process.kill()
                     h.process.join(3)
         self._mark_inactive(camera_id)
+
+    # --- live view ----------------------------------------------------
+    def _mask(self, camera_id: int):
+        with self._lock:
+            if camera_id not in self._masks:
+                self._masks[camera_id] = self._ctx.Value("i", DEFAULT_MASK)
+            return self._masks[camera_id]
+
+    def get_overlay(self, camera_id: int) -> Dict[str, bool]:
+        return mask_to_dict(self._mask(camera_id).value)
+
+    def set_overlay(self, camera_id: int, changes: Dict[str, bool]) -> Dict[str, bool]:
+        m = self._mask(camera_id)
+        with m.get_lock():
+            m.value = apply_changes(m.value, changes)
+        return mask_to_dict(m.value)
+
+    def touch_view(self, camera_id: int) -> None:
+        """Tell the worker someone is watching (it only renders frames while this is recent)."""
+        with self._lock:
+            h = self._handles.get(camera_id)
+        if h and h.last_view is not None:
+            h.last_view.value = time.time()
+
+    def latest_frame(self, camera_id: int) -> Optional[tuple]:
+        return self._frames.get(camera_id)
+
+    def _frame_loop(self, camera_id: int, h: _Handle) -> None:
+        """Move the worker's newest rendered frame into memory for the HTTP stream."""
+        seq = 0
+        while True:
+            try:
+                jpg, meta = h.frame_queue.get(timeout=0.5)
+            except queue.Empty:
+                if not h.process.is_alive():
+                    return
+                continue
+            except (OSError, ValueError, EOFError):
+                return
+            seq += 1
+            self._frames[camera_id] = (seq, jpg, meta)
 
     def status(self, camera_id: int) -> Dict[str, Any]:
         with self._lock:

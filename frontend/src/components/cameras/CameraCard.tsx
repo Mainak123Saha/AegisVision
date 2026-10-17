@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Film, MapPin, Play, Radio, Square, Trash2, Video, Webcam } from "lucide-react";
+import { Film, MapPin, Play, Radio, ScanEye, Square, Trash2, Video, Webcam } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { deleteCamera, startCamera, stopCamera } from "../../api/cameras";
 import type { Camera, CameraStatus } from "../../types/camera";
 import { formatTimeAgo } from "../../utils";
@@ -9,6 +10,7 @@ const TYPE_ICON = { mp4: Film, webcam: Webcam, rtsp: Radio } as const;
 
 export default function CameraCard({ camera, status }: { camera: Camera; status: CameraStatus | undefined }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["cameras"] });
     qc.invalidateQueries({ queryKey: ["camera-status", camera.id] });
@@ -47,8 +49,13 @@ export default function CameraCard({ camera, status }: { camera: Camera; status:
       {failed && <Alert>{status?.last_error}</Alert>}
       {error && <Alert>{error.message}</Alert>}
       <div className="mt-1 flex gap-2">
+        {running && (
+          <Button variant="primary" onClick={() => navigate(`/cameras/${encodeURIComponent(camera.name)}`)}>
+            <ScanEye size={14} /> Live view
+          </Button>
+        )}
         {running ? (
-          <Button variant="danger" className="flex-1 justify-center" disabled={busy} onClick={() => stop.mutate()}>
+          <Button variant="danger" className={running ? "" : "flex-1 justify-center"} disabled={busy} onClick={() => stop.mutate()}>
             <Square size={14} /> Stop
           </Button>
         ) : (

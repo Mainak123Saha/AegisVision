@@ -27,3 +27,26 @@ export interface CameraStatus {
   events_persisted: number;
   last_error: string | null;
 }
+
+export type OverlayKey = "boxes" | "ids" | "confidence" | "zones" | "events" | "trails" | "stats" | "fps";
+export type OverlaySettings = Record<OverlayKey, boolean>;
+
+export interface LiveTrack {
+  track_id: number;
+  class_name: string;
+  confidence: number;
+  /** In a restricted zone / loitering right now. */
+  alert: boolean;
+}
+
+export interface LiveInfo {
+  running: boolean;
+  seq: number;
+  meta: null | {
+    frame: number;
+    stream_time: number;
+    fps: number;
+    tracks: LiveTrack[];
+    stats: { line_in: number; line_out: number; intrusions: number; loitering: number; total_events: number };
+  };
+}
