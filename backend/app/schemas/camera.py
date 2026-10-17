@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -94,3 +94,25 @@ class LiveInfo(BaseModel):
     seq: int = 0
     # frame, stream_time, fps, tracks [{track_id, class_name, confidence, alert}], stats
     meta: Optional[Dict[str, Any]] = None
+
+
+class LineSpec(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=100)
+    points: List[Tuple[float, float]] = Field(min_length=2, max_length=2)
+    cooldown: float = Field(default=1.0, ge=0.0, le=300.0)
+
+
+class ZoneSpec(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=100)
+    points: List[Tuple[float, float]] = Field(min_length=3, max_length=50)
+    rules: List[Literal["intrusion", "loitering"]] = Field(min_length=1)
+    loiter_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
+
+
+class ZonesConfig(BaseModel):
+    camera_id: str = "cam0"
+    coords: Literal["normalized", "pixel"] = "normalized"
+    lines: List[LineSpec] = Field(default_factory=list)
+    zones: List[ZoneSpec] = Field(default_factory=list)

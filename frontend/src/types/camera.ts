@@ -50,3 +50,27 @@ export interface LiveInfo {
     stats: { line_in: number; line_out: number; intrusions: number; loitering: number; total_events: number };
   };
 }
+
+export type ZoneRule = "intrusion" | "loitering";
+
+export interface LineSpec {
+  id: string;
+  name: string;
+  points: [[number, number], [number, number]];
+  cooldown: number;
+}
+
+export interface ZoneSpec {
+  id: string;
+  name: string;
+  points: [number, number][];
+  rules: ZoneRule[];
+  loiter_seconds: number;
+}
+
+export interface ZonesConfig {
+  camera_id: string;
+  coords: "normalized" | "pixel";
+  lines: LineSpec[];
+  zones: ZoneSpec[];
+}

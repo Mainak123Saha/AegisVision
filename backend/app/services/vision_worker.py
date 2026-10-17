@@ -82,16 +82,25 @@ def run_camera_pipeline(camera: Dict[str, Any], opts: Dict[str, Any], out_queue,
         )
         processor = FrameProcessor()
         engine = None
+        zones_mtime = 0.0
         trails = TrailBook()
         proc_fps = 0.0
 
         fps = source.fps if source.fps and source.fps > 0 else 30
         start_wall = time.perf_counter()
         frame_index = 0
+        zones_file = resolve_path(opts["zones_path"])
 
         while not stop_event.is_set():
             t0 = time.perf_counter()
             ok, frame = source.read()
+            if not ok and stype == "mp4":
+                # Loop MP4 camera sources continuously while monitoring is active
+                source.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = source.read()
+                if ok:
+                    tracker.reset()
+                    trails = TrailBook()
             if not ok:
                 break
             stream_time = (time.perf_counter() - start_wall) if live else frame_index / fps
@@ -100,12 +109,23 @@ def run_camera_pipeline(camera: Dict[str, Any], opts: Dict[str, Any], out_queue,
             frame = processor.process(resize_frame(frame, cfg.width))
             tracks = tracker.update(detector.detect(frame), frame)
 
-            if engine is None:
+            try:
+                cur_mtime = os.path.getmtime(zones_file)
+            except OSError:
+                cur_mtime = zones_mtime
+
+            if engine is None or cur_mtime != zones_mtime:
                 h, w = frame.shape[:2]
-                engine = load_engine(resolve_path(opts["zones_path"]), (w, h))
-                # Events are attributed to the DB camera, not the id in the zones file.
-                for rule in engine.rules:
+                new_engine = load_engine(zones_file, (w, h))
+                for rule in new_engine.rules:
                     rule.camera_id = str(cam_id)
+                if engine is not None:
+                    # Preserve running counts and history across live zone edits
+                    new_engine.history = engine.history
+                    new_engine.counts = engine.counts
+                    new_engine.line_counts = engine.line_counts
+                engine = new_engine
+                zones_mtime = cur_mtime
 
             new_events = engine.update(tracks, stream_time)
             trails.update(tracks)
@@ -128,10 +148,11 @@ def run_camera_pipeline(camera: Dict[str, Any], opts: Dict[str, Any], out_queue,
                         "stats": engine.stats(),
                     }
                     _put_latest(frame_queue, (jpg.tobytes(), meta))
-                if not live:  # files would otherwise race through; play them at their own speed
-                    delay = 1.0 / fps - (time.perf_counter() - t0)
-                    if delay > 0:
-                        stop_event.wait(delay)
+
+            if not live:  # files would otherwise race through; play them at their own speed
+                delay = 1.0 / fps - (time.perf_counter() - t0)
+                if delay > 0:
+                    stop_event.wait(delay)
 
             dt = time.perf_counter() - t0
             if dt > 0:

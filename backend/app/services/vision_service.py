@@ -102,13 +102,13 @@ class VisionService:
             self._last_error.pop(camera.id, None)
             stop_event = self._ctx.Event()
             frame_queue = self._ctx.Queue(maxsize=2)
-            last_view = self._ctx.Value("d", 0.0)
+            last_view = self._ctx.Value("d", time.time())
             self._frames.pop(camera.id, None)
             proc = self._ctx.Process(
                 target=run_camera_pipeline,
                 args=(
                     {"id": camera.id, "source_type": camera.source_type, "source_uri": camera.source_uri},
-                    {"zones_path": self.settings.zones_path, "model": self.settings.model},
+                    {"zones_path": self.zones_path_for(camera.id), "model": self.settings.model},
                     self._queue, stop_event, frame_queue, self._mask(camera.id), last_view,
                 ),
                 name=f"camera-{camera.id}", daemon=True,
@@ -135,6 +135,47 @@ class VisionService:
                     h.process.kill()
                     h.process.join(3)
         self._mark_inactive(camera_id)
+
+    # --- zones configuration ------------------------------------------
+    def _custom_zones_file(self, camera_id: int) -> str:
+        return resolve_path(f"config/zones_cam_{camera_id}.json")
+
+    def zones_path_for(self, camera_id: int) -> str:
+        import os
+        custom = self._custom_zones_file(camera_id)
+        if not os.path.isfile(custom):
+            import shutil
+            default_path = resolve_path(self.settings.zones_path)
+            os.makedirs(os.path.dirname(custom), exist_ok=True)
+            if os.path.isfile(default_path):
+                shutil.copyfile(default_path, custom)
+            else:
+                import json
+                with open(custom, "w") as f:
+                    json.dump({"camera_id": str(camera_id), "coords": "normalized", "lines": [], "zones": []}, f, indent=2)
+        return custom
+
+    def get_zones(self, camera_id: int) -> Dict[str, Any]:
+        import json
+        path = self.zones_path_for(camera_id)
+        with open(path) as f:
+            data = json.load(f)
+        data["camera_id"] = str(camera_id)
+        return data
+
+    def set_zones(self, camera_id: int, spec: Dict[str, Any]) -> Dict[str, Any]:
+        import json
+        import os
+        spec = dict(spec)
+        spec["camera_id"] = str(camera_id)
+        spec["coords"] = "normalized"
+        custom = self._custom_zones_file(camera_id)
+        os.makedirs(os.path.dirname(custom), exist_ok=True)
+        tmp = f"{custom}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(spec, f, indent=2)
+        os.replace(tmp, custom)
+        return spec
 
     # --- live view ----------------------------------------------------
     def _mask(self, camera_id: int):

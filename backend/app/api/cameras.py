@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..database.db import get_db
 from ..database.models import Camera
 from ..database.repository import CameraRepository
-from ..schemas.camera import CameraCreate, CameraOut, CameraStatus, CameraUpdate, LiveInfo, OverlaySettings, OverlayUpdate, _check_source
+from ..schemas.camera import CameraCreate, CameraOut, CameraStatus, CameraUpdate, LiveInfo, OverlaySettings, OverlayUpdate, ZonesConfig, _check_source
 from ..services.vision_service import (
     CameraAlreadyRunning, CameraNotRunning, CameraSourceError, VisionService,
 )
@@ -139,6 +139,21 @@ def update_overlay(camera_id: int, body: OverlayUpdate, db: Session = Depends(ge
     """Turn overlays on/off (boxes, ids, confidence, zones, events, trails, stats, fps). Applies live."""
     _get_or_404(CameraRepository(db), camera_id)
     return vision.set_overlay(camera_id, body.model_dump(exclude_none=True))
+
+
+@router.get("/{camera_id}/zones", response_model=ZonesConfig)
+def get_zones(camera_id: int, db: Session = Depends(get_db), vision: VisionService = Depends(get_vision)):
+    """Return the intrusion/loitering zones and counting lines configured for this camera."""
+    _get_or_404(CameraRepository(db), camera_id)
+    return vision.get_zones(camera_id)
+
+
+@router.put("/{camera_id}/zones", response_model=ZonesConfig)
+def update_zones(camera_id: int, body: ZonesConfig, db: Session = Depends(get_db),
+                 vision: VisionService = Depends(get_vision)):
+    """Save custom zones and lines for this camera. Hot-reloaded live by a running worker."""
+    _get_or_404(CameraRepository(db), camera_id)
+    return vision.set_zones(camera_id, body.model_dump())
 
 
 @router.get("/{camera_id}/live", response_model=LiveInfo)

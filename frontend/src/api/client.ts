@@ -46,7 +46,7 @@ export function apiGet<T>(path: string, params?: Record<string, string | number 
   return request<T>(query ? `${path}?${query}` : path);
 }
 
-export function apiSend<T>(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+export function apiSend<T>(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   return request<T>(path, {
     method,
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
