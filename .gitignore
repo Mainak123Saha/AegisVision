@@ -89,3 +89,6 @@ backend/assets/videos/*
 
 # Binary downloaded files
 *.pt
+
+# Personal notes
+WEEKLY_CHANGES.md
